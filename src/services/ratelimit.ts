@@ -184,6 +184,14 @@ export class RateLimitService {
   ): Promise<{ allowed: boolean; remaining: number; retryAfterSeconds?: number }> {
     return this.consumeFixedWindowBudget(identifier, maxRequests, CONFIG.API_WINDOW_SECONDS);
   }
+
+  async consumeBudgetWithWindow(
+    identifier: string,
+    maxRequests: number,
+    windowSeconds: number
+  ): Promise<{ allowed: boolean; remaining: number; retryAfterSeconds?: number }> {
+    return this.consumeFixedWindowBudget(identifier, maxRequests, windowSeconds);
+  }
 }
 
 function parseIpv4Octets(input: string): number[] | null {
@@ -299,6 +307,29 @@ function normalizeClientIpForRateLimit(rawIp: string): string | null {
   return `ip6:${prefix64}`;
 }
 
+function isLocalRequest(request: Request): boolean {
+  const isLoopbackHost = (host: string | null): boolean => {
+    if (!host) return false;
+    const normalized = host.split(':')[0].trim().toLowerCase();
+    return (
+      normalized === 'localhost' ||
+      normalized.endsWith('.localhost') ||
+      normalized === '127.0.0.1' ||
+      normalized === '0.0.0.0' ||
+      normalized === '::1' ||
+      normalized === '[::1]'
+    );
+  };
+
+  try {
+    if (isLoopbackHost(new URL(request.url).hostname)) return true;
+  } catch {
+    // Ignore malformed URL and fall back to Host header check.
+  }
+
+  return isLoopbackHost(request.headers.get('Host'));
+}
+
 export function getClientIdentifier(request: Request): string | null {
   // Strict fallback order:
   // 1) CF-Connecting-IP
@@ -315,6 +346,11 @@ export function getClientIdentifier(request: Request): string | null {
     if (!raw) continue;
     const normalized = normalizeClientIpForRateLimit(raw);
     if (normalized) return normalized;
+  }
+
+  // Local dev (wrangler dev / localhost): allow a deterministic loopback identifier.
+  if (isLocalRequest(request)) {
+    return 'ip4:127.0.0.1';
   }
 
   return null;
